@@ -70,6 +70,11 @@ namespace ImageProcessor.Web.Plugins.AzureBlobCache
         private readonly bool streamCachedImage;
 
         /// <summary>
+        /// Determines if the CDN redirect uses an SAS token. ( Requires streamCachedImage to be true. ) 
+        /// </summary>
+        private readonly bool useSASTokens;
+
+        /// <summary>
         /// The timeout length for requesting the CDN url.
         /// </summary>
         private readonly int timeout = 1000;
@@ -78,6 +83,7 @@ namespace ImageProcessor.Web.Plugins.AzureBlobCache
         /// The cached rewrite path.
         /// </summary>
         private string cachedRewritePath;
+
 
         /// <summary>
         /// Initializes a new instance of the <see cref="AzureBlobCache"/> class.
@@ -139,6 +145,11 @@ namespace ImageProcessor.Web.Plugins.AzureBlobCache
             // but caution should be taken if not used with a CDN as it will add quite a bit of overhead to the site.
             // See: https://github.com/JimBobSquarePants/ImageProcessor/issues/161
             this.streamCachedImage = this.Settings.ContainsKey("StreamCachedImage") && this.Settings["StreamCachedImage"].ToLower() == "true";
+            if ( !this.streamCachedImage )
+            {
+                // SAS tokens allow temporary access to otherwise private resources.
+                this.useSASTokens = this.Settings.ContainsKey("UseSASTokens") && this.Settings["UseSASTokens"].Equals("true", StringComparison.InvariantCultureIgnoreCase);
+            }
         }
 
         /// <summary>
@@ -190,6 +201,13 @@ namespace ImageProcessor.Web.Plugins.AzureBlobCache
 
                     if (blockBlob.Properties.LastModified.HasValue)
                     {
+                        if ( useSASTokens)
+                        {
+                            SharedAccessBlobPolicy policy = new SharedAccessBlobPolicy();
+                            policy.SharedAccessExpiryTime = DateTime.UtcNow.AddMinutes(1);
+                            policy.Permissions = SharedAccessBlobPermissions.Read;
+                            this.CachedPath += blockBlob.GetSharedAccessSignature(policy);
+                        }
                         cachedImage = new CachedImage
                         {
                             Key = Path.GetFileNameWithoutExtension(this.CachedPath),

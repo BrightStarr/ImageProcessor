@@ -10,6 +10,7 @@
         <setting key="SourceStorageAccount" value=""/>
         <setting key="SourceBlobContainer" value=""/>
         <setting key="StreamCachedImage" value="false"/>
+        <setting key="UseSASTokens" value="true" />
       </settings>
     </cache>
   </caches>
