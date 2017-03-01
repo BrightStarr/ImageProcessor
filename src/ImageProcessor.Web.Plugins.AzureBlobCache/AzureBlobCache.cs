@@ -70,6 +70,26 @@ namespace ImageProcessor.Web.Plugins.AzureBlobCache
         private readonly bool streamCachedImage;
 
         /// <summary>
+        /// Determines if the CDN redirect uses an SAS token. ( Requires streamCachedImage to be true. ) 
+        /// </summary>
+        private readonly bool useSASToken;
+
+        /// <summary>
+        /// The duration for sas tokens to be valid for
+        /// </summary>
+        private readonly int sasTokenExpiryMinutes = 30;
+
+        /// <summary>
+        /// The currently derived shared access policy
+        /// </summary>
+        private static SharedAccessBlobPolicy currentSasPolicy = null;
+
+        /// <summary>
+        /// The sas token if in use
+        /// </summary>
+        private readonly string sasToken = "";
+
+        /// <summary>
         /// The timeout length for requesting the CDN url.
         /// </summary>
         private readonly int timeout = 1000;
@@ -78,6 +98,7 @@ namespace ImageProcessor.Web.Plugins.AzureBlobCache
         /// The cached rewrite path.
         /// </summary>
         private string cachedRewritePath;
+
 
         /// <summary>
         /// Initializes a new instance of the <see cref="AzureBlobCache"/> class.
@@ -139,6 +160,47 @@ namespace ImageProcessor.Web.Plugins.AzureBlobCache
             // but caution should be taken if not used with a CDN as it will add quite a bit of overhead to the site.
             // See: https://github.com/JimBobSquarePants/ImageProcessor/issues/161
             this.streamCachedImage = this.Settings.ContainsKey("StreamCachedImage") && this.Settings["StreamCachedImage"].ToLower() == "true";
+            if ( !this.streamCachedImage )
+            {
+                // SAS tokens allow temporary access to otherwise private resources. If set to true we will use this for the media cache container
+                this.useSASToken = this.Settings.ContainsKey("UseSASToken") && this.Settings["UseSASToken"].Equals("true", StringComparison.InvariantCultureIgnoreCase);
+                if (this.useSASToken)
+                {
+                    if (this.Settings.ContainsKey("SASTokenExpiryMinutes"))
+                    {
+                        int sasTokenExpiryMinutesCfg;
+                        if (int.TryParse(this.Settings["SASTokenExpiryMinutes"], out sasTokenExpiryMinutesCfg))
+                        {
+                            this.sasTokenExpiryMinutes = sasTokenExpiryMinutesCfg;
+                        }
+                    }
+                    // Generate a new token if the previous one is going to run out in less than the expiry time / 2
+                    if (currentSasPolicy == null || (currentSasPolicy.SharedAccessExpiryTime ?? DateTime.UtcNow) > DateTime.UtcNow.AddMinutes(0 - sasTokenExpiryMinutes / 2))
+                    {
+                        currentSasPolicy = new SharedAccessBlobPolicy();
+                        currentSasPolicy.SharedAccessExpiryTime = DateTime.UtcNow.AddMinutes(sasTokenExpiryMinutes);
+                        currentSasPolicy.Permissions = SharedAccessBlobPermissions.Read;
+                    }
+                }
+            }
+        }
+
+        private static string AppendSasToken(string url)
+        {
+            if(currentSasPolicy == null)
+            {
+                return url;
+            }
+
+            var token = cloudCachedBlobContainer.GetSharedAccessSignature(currentSasPolicy);
+            // token starts with a ? - so deal with it
+            if (url.IndexOf("?") == -1)
+            {
+                return url + token;
+            } else
+            {
+                return url += "&" + token.Substring(1);
+            }
         }
 
         /// <summary>
@@ -153,8 +215,9 @@ namespace ImageProcessor.Web.Plugins.AzureBlobCache
             // if the last time it was checked is greater than 5 seconds. This would be much better for perf
             // if there is a high throughput of image requests.
             string cachedFileName = await this.CreateCachedFileNameAsync();
-            this.CachedPath = CachedImageHelper.GetCachedPath(cloudCachedBlobContainer.Uri.ToString(), cachedFileName, true, this.FolderDepth);
 
+            this.CachedPath = CachedImageHelper.GetCachedPath(cloudCachedBlobContainer.Uri.ToString(), cachedFileName, true, this.FolderDepth);
+            
             // Do we insert the cache container? This seems to break some setups.
             bool useCachedContainerInUrl = this.Settings.ContainsKey("UseCachedContainerInUrl") && this.Settings["UseCachedContainerInUrl"].ToLower() != "false";
 
@@ -461,7 +524,12 @@ namespace ImageProcessor.Web.Plugins.AzureBlobCache
                     response = (HttpWebResponse)request.GetResponse();
                     response.Dispose();
                     ImageProcessingModule.AddCorsRequestHeaders(context);
-                    context.Response.Redirect(this.cachedRewritePath, false);
+                    var path = this.cachedRewritePath;
+                    if(useSASToken)
+                    {
+                        path = AppendSasToken(this.cachedRewritePath);
+                    }
+                    context.Response.Redirect(path, false);
                 }
                 catch (WebException ex)
                 {
